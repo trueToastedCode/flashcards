@@ -101,20 +101,95 @@ class QAParser:
         
         return self
     
-    def parse_file(self, filename: str) -> 'QAParser':
+    # Erkannte Kopfzeilen bei CSV-Dateien (werden übersprungen)
+    csv_header_names = {
+        ('question', 'answer'),
+        ('frage', 'antwort'),
+        ('front', 'back'),
+        ('vorderseite', 'rückseite'),
+        ('vorderseite', 'rueckseite'),
+    }
+
+    def parse_csv(self, text: str, delimiter: str = ',') -> 'QAParser':
         """
-        Parst eine Datei und extrahiert alle Frage/Antwort-Paare.
-        
+        Parst CSV-Text mit zwei Spalten (Frage, Antwort), z. B. Karteikarten-Export.
+        Kopfzeile ist optional. Felder in Anführungszeichen dürfen Zeilenumbrüche
+        und Trennzeichen enthalten.
+
         Args:
-            filename: Pfad zur zu parsenden Datei
-            
+            text: CSV-Inhalt
+            delimiter: Spaltentrenner (Standard: Komma)
+
         Returns:
             Self für Method Chaining
         """
-        with open(filename, 'r', encoding='utf-8') as f:
+        import csv
+        from io import StringIO
+
+        text = text.lstrip('\ufeff').replace('\r\n', '\n').replace('\r', '\n')
+        self.qa_pairs = []
+        reader = csv.reader(StringIO(text, newline=''), delimiter=delimiter)
+        first_row = True
+
+        for row in reader:
+            if not row or all(not c.strip() for c in row):
+                continue  # Leerzeile
+
+            if first_row:
+                first_row = False
+                if tuple(c.strip().lower() for c in row[:2]) in self.csv_header_names:
+                    continue  # Kopfzeile überspringen
+
+            if len(row) > 2:
+                raise ValueError(
+                    f"Fehler in CSV-Zeile {reader.line_num}: {len(row)} Spalten statt 2 "
+                    f"(Komma in einer Zelle ohne Anführungszeichen?)"
+                )
+
+            question = row[0].strip()
+            answer = row[1].strip() if len(row) == 2 else ''
+
+            if not question:
+                raise ValueError(f"Fehler in CSV-Zeile {reader.line_num}: Antwort ohne Frage!")
+
+            if not answer:
+                print(f"WARNUNG CSV-Zeile {reader.line_num}: Frage ohne Antwort gefunden")
+                self.qa_pairs.append(QAPair(question=question, answer=None))
+            else:
+                self.qa_pairs.append(QAPair(question=question, answer=answer))
+
+        return self
+
+    def parse_file(self, filename: str, fmt: str = 'auto', delimiter: str = ',') -> 'QAParser':
+        """
+        Parst eine Datei und extrahiert alle Frage/Antwort-Paare.
+
+        Args:
+            filename: Pfad zur zu parsenden Datei
+            fmt: 'auto', 'markers' (### Frage ### / ### Antwort ###) oder 'csv'.
+                 Bei 'auto': Endung .csv -> CSV, sonst CSV nur, wenn keine
+                 Frage-Marker im Text vorkommen.
+            delimiter: Spaltentrenner für CSV
+
+        Returns:
+            Self für Method Chaining
+        """
+        with open(filename, 'r', encoding='utf-8-sig') as f:
             text = f.read()
-        return self.parse(text)
-    
+
+        if fmt == 'auto':
+            has_markers = any(self.question_pattern.match(l.strip()) for l in text.split('\n'))
+            if filename.lower().endswith('.csv') or not has_markers:
+                fmt = 'csv'
+            else:
+                fmt = 'markers'
+
+        if fmt == 'csv':
+            return self.parse_csv(text, delimiter)
+        if fmt == 'markers':
+            return self.parse(text)
+        raise ValueError(f"Unbekanntes Format: {fmt!r} (erlaubt: 'auto', 'markers', 'csv')")
+
     def __iter__(self) -> Iterator[QAPair]:
         """Ermöglicht Iteration über die QA-Paare"""
         return iter(self.qa_pairs)
